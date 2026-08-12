@@ -1,0 +1,131 @@
+actions:
+  # ---- Manual/API run start -------------------------------------------
+  - name: triggerWorkflowRun
+    definition:
+      kind: synchronous
+      handler: '{{ACTIONS_BASE_URL}}/actions/trigger-workflow-run'
+      forward_client_headers: true      # so the handler sees X-Hasura-User-Id
+      headers:
+        - name: x-action-secret
+          value_from_env: ACTION_SECRET
+    permissions:
+      - role: user       # Layer 1's first check (owner/editor) happens
+                          # inside the handler itself — see actions/README
+
+  # ---- Approve a paused approval_gate step ------------------------------
+  - name: approveStep
+    definition:
+      kind: synchronous
+      handler: '{{ACTIONS_BASE_URL}}/actions/approve-step'
+      forward_client_headers: true
+      headers:
+        - name: x-action-secret
+          value_from_env: ACTION_SECRET
+    permissions:
+      - role: user
+
+  # ---- Inbound webhook trigger (no user session — auth is a per-workflow
+  #      secret carried in the request body, checked in the handler) -----
+  - name: webhookTriggerRun
+    definition:
+      kind: synchronous
+      handler: '{{ACTIONS_BASE_URL}}/actions/webhook-trigger-run'
+      headers:
+        - name: x-action-secret
+          value_from_env: ACTION_SECRET
+    permissions:
+      - role: public
+
+custom_types:
+  input_objects:
+    - name: TriggerWorkflowRunInput
+      fields:
+        - name: workflow_id
+          type: uuid!
+    - name: ApproveStepInput
+      fields:
+        - name: step_run_id
+          type: uuid!
+    - name: WebhookTriggerRunInput
+      fields:
+        - name: workflow_id
+          type: uuid!
+        - name: secret
+          type: String!
+        - name: payload
+          type: json
+  objects:
+    - name: TriggerWorkflowRunOutput
+      fields:
+        - name: workflow_run_id
+          type: uuid!
+        - name: status
+          type: String!
+    - name: ApproveStepOutput
+      fields:
+        - name: step_run_id
+          type: uuid!
+        - name: status
+          type: String!
+
+---
+# ============================================================
+# Event Trigger: Database event → auto-starts a run
+# Fires whenever a row is inserted into a "watched" table (the demo
+# uses `public.leads`; workflow_triggers.config.table selects which
+# table+workflow pairing to react to). The handler looks up which
+# workflow(s) have a db_event trigger configured for this table/op
+# and calls triggerWorkflowRun internally for each.
+# ============================================================
+event_triggers:
+  - name: on_watched_table_insert
+    table: { schema: public, name: leads }
+    insert:
+      columns: '*'
+    webhook: '{{ACTIONS_BASE_URL}}/events/db-event-trigger'
+    headers:
+      - name: x-action-secret
+        value_from_env: ACTION_SECRET
+    retry_conf:
+      num_retries: 3
+      interval_sec: 10
+      timeout_sec: 30
+
+  # ------------------------------------------------------------
+  # notify step type is "implemented as an Event Trigger": the step
+  # executor just inserts a row into `notifications`; this trigger is
+  # what actually performs the Slack/email send, decoupled from the
+  # workflow engine so delivery failures never fail the run itself.
+  # ------------------------------------------------------------
+  - name: on_notification_insert
+    table: { schema: public, name: notifications }
+    insert:
+      columns: '*'
+    webhook: '{{ACTIONS_BASE_URL}}/events/notify-delivery'
+    headers:
+      - name: x-action-secret
+        value_from_env: ACTION_SECRET
+    retry_conf:
+      num_retries: 3
+      interval_sec: 15
+      timeout_sec: 20
+
+---
+# ============================================================
+# Scheduled: cron trigger polling for workflows with an enabled
+# `scheduled` trigger. Runs every minute; the handler itself checks
+# each workflow's cron expression against "now" so a single Hasura
+# cron trigger can serve arbitrary per-workflow schedules.
+# ============================================================
+cron_triggers:
+  - name: scheduled_workflow_dispatcher
+    webhook: '{{ACTIONS_BASE_URL}}/scheduled/dispatch'
+    schedule: '* * * * *'
+    include_in_metadata: true
+    payload: {}
+    headers:
+      - name: x-action-secret
+        value_from_env: ACTION_SECRET
+    retry_conf:
+      num_retries: 1
+      timeout_seconds: 60

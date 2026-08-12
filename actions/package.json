@@ -1,0 +1,17 @@
+{
+  "name": "workflow-builder-actions",
+  "version": "1.0.0",
+  "description": "Hasura Action handlers: triggerWorkflowRun, approveStep, webhook/db-event/scheduled dispatch",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "graphql-request": "^6.1.0",
+    "node-cron": "^3.0.3",
+    "node-fetch": "^2.7.0"
+  }
+}
